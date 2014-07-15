@@ -211,5 +211,83 @@ class partner(osv.osv):
             vals['category_id']=[[6, 0, _recompute_categ(self, cr, uid, ids[0], vals['answers_ids'][0][2])]]
 
         return super(partner, self).write(cr, uid, ids, vals, context=context)
+
+
+
+class crm_segmentation(osv.osv):
+    """ CRM Segmentation """
+
+    _inherit="crm.segmentation"
+    _columns={
+        "answer_yes": fields.many2many("crm_profiling.answer","profile_question_yes_rel",\
+                            "profile","answer","Included Answers"),
+        "answer_no": fields.many2many("crm_profiling.answer","profile_question_no_rel",\
+                            "profile","answer","Excluded Answers"),
+        'parent_id': fields.many2one('crm.segmentation', 'Parent Profile'),
+        'child_ids': fields.one2many('crm.segmentation', 'parent_id', 'Child Profiles'),
+        'profiling_active': fields.boolean('Use The Profiling Rules', help='Check\
+                             this box if you want to use this tab as part of the \
+                             segmentation rule. If not checked, the criteria beneath will be ignored')
+        }
+
+    _constraints = [
+        (osv.osv._check_recursion, 'Error ! You cannot create recursive profiles.', ['parent_id'])
+    ]
+
+    def process_continue(self, cr, uid, ids, start=False):
+        """
+            @param self: The object pointer
+            @param cr: the current row, from the database cursor,
+            @param uid: the current user’s ID for security checks,
+            @param ids: List of crm segmentation’s IDs """
+
+        partner_obj = self.pool.get('res.partner')
+        categs = self.read(cr,uid,ids,['categ_id','exclusif','partner_id', \
+                            'sales_purchase_active', 'profiling_active'])
+        for categ in categs:
+            if start:
+                if categ['exclusif']:
+                    cr.execute('delete from res_partner_res_partner_category_rel where \
+                            category_id=%s', (categ['categ_id'][0],))
+                    partner_obj.invalidate_cache(cr, uid, ['category_id'])
+
+            id = categ['id']
+
+            cr.execute('select id from res_partner order by id ')
+            partners = [x[0] for x in cr.fetchall()]
+
+            if categ['sales_purchase_active']:
+                to_remove_list=[]
+                cr.execute('select id from crm_segmentation_line where segmentation_id=%s', (id,))
+                line_ids = [x[0] for x in cr.fetchall()]
+
+                for pid in partners:
+                    if (not self.pool.get('crm.segmentation.line').test(cr, uid, line_ids, pid)):
+                        to_remove_list.append(pid)
+                for pid in to_remove_list:
+                    partners.remove(pid)
+
+            if categ['profiling_active']:
+                to_remove_list = []
+                for pid in partners:
+
+                    cr.execute('select distinct(answer) from partner_question_rel where partner=%s',(pid,))
+                    answers_ids = [x[0] for x in cr.fetchall()]
+
+                    if (not test_prof(cr, uid, id, pid, answers_ids)):
+                        to_remove_list.append(pid)
+                for pid in to_remove_list:
+                    partners.remove(pid)
+
+            for partner in partner_obj.browse(cr, uid, partners):
+                category_ids = [categ_id.id for categ_id in partner.category_id]
+                if categ['categ_id'][0] not in category_ids:
+                    cr.execute('insert into res_partner_res_partner_category_rel (category_id,partner_id) values (%s,%s)', (categ['categ_id'][0],partner.id))
+                    partner_obj.invalidate_cache(cr, uid, ['category_id'], [partner.id])
+
+            self.write(cr, uid, [id], {'state':'not running', 'partner_id':0})
+        return True
+
+
 # vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:
 
